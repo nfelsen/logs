@@ -9,35 +9,66 @@ import (
 	"os"
 )
 
+type Configuration struct {
+	Host string `json:"host"`
+	Type string `json:"type"`
+}
+
 var (
-	host *string = flag.String("host", "localhost", "Elasticsearch Host")
+	ConfigFile    *string = flag.String("config", os.Getenv("HOME")+"/.logs_config.json", "Logs configuration")
+	configuration         = Configuration{}
 )
 
+func LoadConfig() {
+	file, _ := os.Open(*ConfigFile)
+	decoder := json.NewDecoder(file)
+	err := decoder.Decode(&configuration)
+	if err != nil {
+		fmt.Println("error:", err)
+	}
+}
+
 func main() {
+	LoadConfig()
+	bolB, _ := json.Marshal(configuration)
+	fmt.Println(string(bolB))
 	c := elastigo.NewConn()
 	var results = make(map[string]bool)
 	log.SetFlags(log.LstdFlags)
 	flag.Parse()
 
-	// fmt.Println("host = ", *host)
+	// fmt.Println("host = ", configuration)
 	// Set the Elasticsearch Host to Connect to
-	c.Domain = *host
+	c.Domain = configuration.Host
 
 	// Search Using Raw json String
+	// searchJson := `{
+	//      "query": {
+	//        "match_all": { }
+	//      },
+	//      "facets": {
+	//        "tags": {
+	//          "terms": {
+	//            "field": "tags",
+	//            "all_terms": true
+	//          }
+	//        }
+	//      }
+	//  }`
 	searchJson := `{
-      "query": {
-        "match_all": { }
-      },
-      "facets": {
-        "tags": {
-          "terms": {
-            "field": "tags",
-            "all_terms": true
-          }
-        }
-      }
-  }`
-	out, err := c.Search("logstash-2014.09.03", "logs", nil, searchJson)
+	  "query": {
+	    "match_all": {}
+	  },
+	  "size": 1,
+	  "sort": [
+	    {
+	      "_timestamp": {
+	        "order": "desc"
+	      }
+	    }
+	  ]
+	}`
+	out, err := c.Search("logstash-2015.08.01", "logs", nil, searchJson)
 	if len(out.Hits.Hits) != 0 {
 		for i := 0; i < len(out.Hits.Hits); i++ {
 			var fields = out.Hits.Hits[i].Source
