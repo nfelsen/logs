@@ -4,19 +4,24 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	elastigo "github.com/mattbaird/elastigo/lib"
-	"log"
+	"gopkg.in/olivere/elastic.v2"
 	"os"
+	"regexp"
+	s "strings"
+	"time"
 )
 
 type Configuration struct {
-	Host string `json:"host"`
-	Type string `json:"type"`
+	Host      string `json:"host"`
+	ServerURL string `json:"server_url"`
+	Type      string `json:"type"`
+	Service   map[string]string
 }
 
 var (
 	ConfigFile    *string = flag.String("config", os.Getenv("HOME")+"/.logs_config.json", "Logs configuration")
 	configuration         = Configuration{}
+	arg1                  = "medium"
 )
 
 func LoadConfig() {
@@ -28,69 +33,67 @@ func LoadConfig() {
 	}
 }
 
+func ListIndexes(client *elastic.Client, t time.Time) {
+	set := make(map[string]struct{})
+	indexes, err := client.IndexNames()
+	if err != nil {
+		panic(err)
+	}
+	for _, element := range indexes {
+		res := element
+		match, _ := regexp.MatchString("[0-9]{4}.[0-9]{2}.[0-9]{2}.[0-9]{2}", element)
+		if match {
+			r, _ := regexp.Compile("[0-9]{4}.[0-9]{2}.[0-9]{2}.[0-9]{2}")
+			res = r.ReplaceAllString(element, "2006.01.02.15")
+		} else {
+			match, _ := regexp.MatchString("[0-9]{4}.[0-9]{2}.[0-9]{2}", element)
+			if match {
+				r, _ := regexp.Compile("[0-9]{4}.[0-9]{2}.[0-9]{2}")
+				res = r.ReplaceAllString(element, "2006.01.02")
+			}
+		}
+		index := fmt.Sprintf("%s", t.Format(res))
+		set[index] = struct{}{}
+
+	}
+	// newSlice := []string{}
+	// for key := range set {
+	// 	newSlice := append(newSlice, key)
+	// }
+	fmt.Println(set)
+}
+
+func ReplaceTime(service *string, t time.Time) {
+	year := fmt.Sprintf("%04d", t.Year())
+	month := fmt.Sprintf("%02d", t.Month())
+	day := fmt.Sprintf("%02d", t.Day())
+	hour := fmt.Sprintf("%02d", t.Hour())
+	min := fmt.Sprintf("%02d", t.Minute())
+	*service = s.Replace(*service, "YYYY", year, -1)
+	*service = s.Replace(*service, "MM", month, -1)
+	*service = s.Replace(*service, "DD", day, -1)
+	*service = s.Replace(*service, "HH", hour, -1)
+	*service = s.Replace(*service, "mm", min, -1)
+}
+
 func main() {
 	LoadConfig()
 	bolB, _ := json.Marshal(configuration)
 	fmt.Println(string(bolB))
-	c := elastigo.NewConn()
-	var results = make(map[string]bool)
-	log.SetFlags(log.LstdFlags)
-	flag.Parse()
-
-	// fmt.Println("host = ", configuration)
-	// Set the Elasticsearch Host to Connect to
-	c.Domain = configuration.Host
-
-	// Search Using Raw json String
-	// searchJson := `{
-	//      "query": {
-	//        "match_all": { }
-	//      },
-	//      "facets": {
-	//        "tags": {
-	//          "terms": {
-	//            "field": "tags",
-	//            "all_terms": true
-	//          }
-	//        }
-	//      }
-	//  }`
-	searchJson := `{
-	  "query": {
-	    "match_all": {}
-	  },
-	  "size": 1,
-	  "sort": [
-	    {
-	      "_timestamp": {
-	        "order": "desc"
-	      }
-	    }
-	  ]
-	}`
-	out, err := c.Search("logstash-2015.08.01", "logs", nil, searchJson)
-	if len(out.Hits.Hits) != 0 {
-		for i := 0; i < len(out.Hits.Hits); i++ {
-			var fields = out.Hits.Hits[i].Source
-			c := make(map[string]interface{})
-			err := json.Unmarshal(*fields, &c)
-			exitIfErr(err)
-
-			// copy c's keys into k
-			for s, _ := range c {
-				results[s] = true
-			}
-		}
-	}
-	for key, _ := range results {
-		fmt.Println(key)
-	}
-	exitIfErr(err)
-}
-
-func exitIfErr(err error) {
+	client, err := elastic.NewClient(elastic.SetURL(configuration.ServerURL))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
-		os.Exit(1)
+		panic(err)
 	}
+	info, code, err := client.Ping().Do()
+	if err != nil {
+		panic(err)
+	}
+	t := time.Now()
+	fmt.Printf("%s\n", t.Format("logstash-2006.01.02.03"))
+	service := configuration.Service[arg1]
+	ReplaceTime(&service, t)
+	fmt.Println("service : ", service)
+	ListIndexes(client, t)
+	os.Exit(0)
+	fmt.Printf("Elasticsearch returned with code %d and version %s\n", code, info.Version.Number)
 }
