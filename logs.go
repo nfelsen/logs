@@ -21,7 +21,7 @@ type Configuration struct {
 var (
 	ConfigFile    *string = flag.String("config", os.Getenv("HOME")+"/.logs_config.json", "Logs configuration")
 	configuration         = Configuration{}
-	arg1                  = "medium"
+	arg1                  = "sepia"
 )
 
 func LoadConfig() {
@@ -33,47 +33,84 @@ func LoadConfig() {
 	}
 }
 
-func ListIndexes(client *elastic.Client, t time.Time) {
+// TODO fix bug on index names like Neo4j-YYYY.MM.DD
+func ListIndexes(client *elastic.Client, t time.Time) map[string]struct{} {
 	set := make(map[string]struct{})
 	indexes, err := client.IndexNames()
 	if err != nil {
 		panic(err)
 	}
 	for _, element := range indexes {
-		res := element
-		match, _ := regexp.MatchString("[0-9]{4}.[0-9]{2}.[0-9]{2}.[0-9]{2}", element)
-		if match {
-			r, _ := regexp.Compile("[0-9]{4}.[0-9]{2}.[0-9]{2}.[0-9]{2}")
-			res = r.ReplaceAllString(element, "2006.01.02.15")
-		} else {
-			match, _ := regexp.MatchString("[0-9]{4}.[0-9]{2}.[0-9]{2}", element)
-			if match {
-				r, _ := regexp.Compile("[0-9]{4}.[0-9]{2}.[0-9]{2}")
-				res = r.ReplaceAllString(element, "2006.01.02")
-			}
+		r, _ := regexp.Compile("(.*-)[0-9]{4}(\\..*)")
+		if r != nil {
+			element = r.ReplaceAllString(element, "${1}2006${2}")
 		}
-		index := fmt.Sprintf("%s", t.Format(res))
+		r, _ = regexp.Compile("(.*-2006.)[0-9]{2}(\\.?.*)")
+		if r != nil {
+			element = r.ReplaceAllString(element, "${1}01${2}")
+		}
+		r, _ = regexp.Compile("(.*-2006.01.)[0-9]{2}(\\.?.*)")
+		if r != nil {
+			element = r.ReplaceAllString(element, "${1}02${2}")
+		}
+		r, _ = regexp.Compile("(.*-2006.01.02.)[0-9]{2}(\\.?.*)")
+		if r != nil {
+			element = r.ReplaceAllString(element, "${1}15${2}")
+		}
+		index := fmt.Sprintf("%s", t.Format(element))
 		set[index] = struct{}{}
-
 	}
-	// newSlice := []string{}
-	// for key := range set {
-	// 	newSlice := append(newSlice, key)
-	// }
-	fmt.Println(set)
+	return set
 }
 
 func ReplaceTime(service *string, t time.Time) {
-	year := fmt.Sprintf("%04d", t.Year())
-	month := fmt.Sprintf("%02d", t.Month())
-	day := fmt.Sprintf("%02d", t.Day())
-	hour := fmt.Sprintf("%02d", t.Hour())
-	min := fmt.Sprintf("%02d", t.Minute())
+	year := fmt.Sprintf("%04d", t.UTC().Year())
+	month := fmt.Sprintf("%02d", t.UTC().Month())
+	day := fmt.Sprintf("%02d", t.UTC().Day())
+	hour := fmt.Sprintf("%02d", t.UTC().Hour())
+	min := fmt.Sprintf("%02d", t.UTC().Minute())
 	*service = s.Replace(*service, "YYYY", year, -1)
 	*service = s.Replace(*service, "MM", month, -1)
 	*service = s.Replace(*service, "DD", day, -1)
 	*service = s.Replace(*service, "HH", hour, -1)
 	*service = s.Replace(*service, "mm", min, -1)
+}
+
+func TailLog(client *elastic.Client, index string) {
+	_, err := client.IndexExists(index).Do()
+	if err != nil {
+		panic(err)
+	}
+	// termQuery := elastic.NewTermQuery("service", "medium")
+	// Query(&termQuery). // specify the query
+	// Must(elastic.From("@timestamp").
+	searchResult, err := client.Search().
+		Index(index).
+		Sort("@timestamp", false).
+		From(0).Size(100). // take documents 0-9
+		Pretty(true).      // pretty print request and response JSON
+		Do()               // execute
+	if err != nil {
+		// Handle error
+		panic(err)
+	}
+	if searchResult.Hits != nil {
+		fmt.Printf("Found a total of %d logs\n", searchResult.Hits.TotalHits)
+		for _, hit := range searchResult.Hits.Hits {
+			var t map[string]interface{}
+			err := json.Unmarshal(*hit.Source, &t)
+			if err != nil {
+				panic(err)
+			}
+			for key, element := range t {
+				fmt.Printf("%s: %s, ", key, element)
+			}
+			println("\n")
+		}
+	} else {
+		// No hits
+		fmt.Print("Found no tweets\n")
+	}
 }
 
 func main() {
@@ -94,6 +131,7 @@ func main() {
 	ReplaceTime(&service, t)
 	fmt.Println("service : ", service)
 	ListIndexes(client, t)
+	TailLog(client, service)
 	os.Exit(0)
 	fmt.Printf("Elasticsearch returned with code %d and version %s\n", code, info.Version.Number)
 }
